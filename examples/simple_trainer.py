@@ -316,7 +316,10 @@ class Runner:
         print("Scene scale:", self.scene_scale)
 
         # Model
-        feature_dim = 32 if cfg.app_opt else None
+        if cfg.custom:
+            feature_dim = 5
+        else:
+            feature_dim = 32 if cfg.app_opt else None
         self.splats, self.optimizers = create_splats_with_optimizers(
             self.parser,
             init_type=cfg.init_type,
@@ -457,17 +460,20 @@ class Runner:
         opacities = torch.sigmoid(self.splats["opacities"])  # [N,]
 
         image_ids = kwargs.pop("image_ids", None)
-        if self.cfg.app_opt:
-            colors = self.app_module(
-                features=self.splats["features"],
-                embed_ids=image_ids,
-                dirs=means[None, :, :] - camtoworlds[:, None, :3, 3],
-                sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree),
-            )
-            colors = colors + self.splats["colors"]
-            colors = torch.sigmoid(colors)
+        if self.cfg.custom:
+            colors = self.splats["colors"] # [N, D]
         else:
-            colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
+            if self.cfg.app_opt:
+                colors = self.app_module(
+                    features=self.splats["features"],
+                    embed_ids=image_ids,
+                    dirs=means[None, :, :] - camtoworlds[:, None, :3, 3],
+                    sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree),
+                )
+                colors = colors + self.splats["colors"]
+                colors = torch.sigmoid(colors)
+            else:
+                colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
 
         rasterize_mode = "antialiased" if self.cfg.antialiased else "classic"
         render_colors, render_alphas, info = rasterization(
@@ -602,6 +608,10 @@ class Runner:
                 render_mode="RGB+ED" if cfg.depth_loss else "RGB",
                 masks=masks,
             )
+
+            # info
+            # out_plane_distance = info["out_plane_distance"]
+            
             if renders.shape[-1] == 4:
                 colors, depths = renders[..., 0:3], renders[..., 3:4]
             else:

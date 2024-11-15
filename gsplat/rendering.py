@@ -536,7 +536,7 @@ def rasterization(
                 if backgrounds is not None
                 else None
             )
-            render_colors_, render_alphas_ = rasterize_to_pixels(
+            render_colors_, render_alphas_, out_plane_distance_ = rasterize_to_pixels(
                 means2d,
                 conics,
                 colors_chunk,
@@ -555,7 +555,7 @@ def rasterization(
         render_colors = torch.cat(render_colors, dim=-1)
         render_alphas = render_alphas[0]  # discard the rest
     else:
-        render_colors, render_alphas = rasterize_to_pixels(
+        render_colors, render_alphas, out_plane_distance = rasterize_to_pixels(
             means2d,
             conics,
             colors,
@@ -578,6 +578,8 @@ def rasterization(
             ],
             dim=-1,
         )
+
+    meta["out_plane_distance"] = out_plane_distance
 
     return render_colors, render_alphas, meta
 

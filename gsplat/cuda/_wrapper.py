@@ -447,6 +447,11 @@ def rasterize_to_pixels(
     masks: Optional[Tensor] = None,  # [C, tile_height, tile_width]
     packed: bool = False,
     absgrad: bool = False,
+    render_geo: bool = False,
+    cx: float = 0.0,
+    cy: float = 0.0,
+    focal_x: float = 1.0,
+    focal_y: float = 1.0,
 ) -> Tuple[Tensor, Tensor]:
     """Rasterizes Gaussians to pixels.
 
@@ -548,7 +553,7 @@ def rasterize_to_pixels(
         tile_width * tile_size >= image_width
     ), f"Assert Failed: {tile_width} * {tile_size} >= {image_width}"
 
-    render_colors, render_alphas = _RasterizeToPixels.apply(
+    render_colors, render_alphas, out_plane_distance = _RasterizeToPixels.apply(
         means2d.contiguous(),
         conics.contiguous(),
         colors.contiguous(),
@@ -561,11 +566,16 @@ def rasterize_to_pixels(
         isect_offsets.contiguous(),
         flatten_ids.contiguous(),
         absgrad,
+        render_geo,
+        cx,
+        cy,
+        focal_x,
+        focal_y,
     )
 
     if padded_channels > 0:
         render_colors = render_colors[..., :-padded_channels]
-    return render_colors, render_alphas
+    return render_colors, render_alphas, out_plane_distance
 
 
 @torch.no_grad()
@@ -916,8 +926,13 @@ class _RasterizeToPixels(torch.autograd.Function):
         isect_offsets: Tensor,  # [C, tile_height, tile_width]
         flatten_ids: Tensor,  # [n_isects]
         absgrad: bool,
+        render_ego: bool,
+        cx: float,
+        cy: float,
+        focal_x: float,
+        focal_y: float,
     ) -> Tuple[Tensor, Tensor]:
-        render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
+        render_colors, render_alphas, last_ids, out_plane_distance = _make_lazy_cuda_func(
             "rasterize_to_pixels_fwd"
         )(
             means2d,
@@ -931,6 +946,11 @@ class _RasterizeToPixels(torch.autograd.Function):
             tile_size,
             isect_offsets,
             flatten_ids,
+            render_ego,
+            cx,
+            cy,
+            focal_x,
+            focal_y,
         )
 
         ctx.save_for_backward(
@@ -952,13 +972,14 @@ class _RasterizeToPixels(torch.autograd.Function):
 
         # double to float
         render_alphas = render_alphas.float()
-        return render_colors, render_alphas
+        return render_colors, render_alphas, out_plane_distance
 
     @staticmethod
     def backward(
         ctx,
         v_render_colors: Tensor,  # [C, H, W, 3]
         v_render_alphas: Tensor,  # [C, H, W, 1]
+        v_out_plane_distance: Tensor = None,  # [C, H, W, 1]
     ):
         (
             means2d,
@@ -1025,6 +1046,11 @@ class _RasterizeToPixels(torch.autograd.Function):
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            None
         )
 
 

@@ -33,7 +33,14 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
     S *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
     S *__restrict__ render_alphas, // [C, image_height, image_width, 1]
-    int32_t *__restrict__ last_ids // [C, image_height, image_width]
+    int32_t *__restrict__ last_ids, // [C, image_height, image_width],
+
+    S *__restrict__ out_plane_distance, // [C, image_height, image_width]
+    const bool render_geo,
+    const float cx,
+    const float cy,
+    const float focal_x,
+    const float focal_y
 ) {
     // each thread draws one pixel, but also timeshares caching gaussians in a
     // shared tile
@@ -166,6 +173,9 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         }
     }
 
+    const float2 pixf = { (float)i + 0.5f, (float)j + 0.5f };
+    const float2 ray = { (pixf.x - cx ) / focal_x, (pixf.y - cy) / focal_y };
+
     if (inside) {
         // Here T is the transmittance AFTER the last gaussian in this pixel.
         // We (should) store double precision as T would be used in backward
@@ -181,11 +191,15 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         }
         // index in bin of last gaussian in this pixel
         last_ids[pix_id] = static_cast<int32_t>(cur_idx);
+
+        if (render_geo) {
+            out_plane_distance[pix_id] = pix_out[4] / -(pix_out[0] * ray.x + pix_out[1] * ray.y + pix_out[2] + 1.0e-8f);
+        }
     }
 }
 
 template <uint32_t CDIM>
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
     const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
@@ -199,7 +213,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
     const uint32_t tile_size,
     // intersections
     const torch::Tensor &tile_offsets, // [C, tile_height, tile_width]
-    const torch::Tensor &flatten_ids   // [n_isects]
+    const torch::Tensor &flatten_ids,   // [n_isects]
+    const bool render_geo,
+    const float cx,
+    const float cy,
+    const float focal_x,
+    const float focal_y
 ) {
     GSPLAT_DEVICE_GUARD(means2d);
     GSPLAT_CHECK_INPUT(means2d);
@@ -238,6 +257,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
     );
     torch::Tensor last_ids = torch::empty(
         {C, image_height, image_width}, means2d.options().dtype(torch::kInt32)
+    );
+
+    torch::Tensor out_plane_distance = torch::empty(
+        {C, image_height, image_width, 1}, means2d.options().dtype(torch::kFloat32)
     );
 
     at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
@@ -281,13 +304,20 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
             flatten_ids.data_ptr<int32_t>(),
             renders.data_ptr<float>(),
             alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>()
+            last_ids.data_ptr<int32_t>(),
+
+            out_plane_distance.data_ptr<float>(),
+            render_geo,
+            cx,
+            cy,
+            focal_x,
+            focal_y
         );
 
-    return std::make_tuple(renders, alphas, last_ids);
+    return std::make_tuple(renders, alphas, last_ids, out_plane_distance);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 rasterize_to_pixels_fwd_tensor(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
@@ -302,7 +332,12 @@ rasterize_to_pixels_fwd_tensor(
     const uint32_t tile_size,
     // intersections
     const torch::Tensor &tile_offsets, // [C, tile_height, tile_width]
-    const torch::Tensor &flatten_ids   // [n_isects]
+    const torch::Tensor &flatten_ids,   // [n_isects]
+    const bool render_geo,
+    const float cx,
+    const float cy,
+    const float focal_x,
+    const float focal_y
 ) {
     GSPLAT_CHECK_INPUT(colors);
     uint32_t channels = colors.size(-1);
@@ -320,7 +355,12 @@ rasterize_to_pixels_fwd_tensor(
             image_height,                                                      \
             tile_size,                                                         \
             tile_offsets,                                                      \
-            flatten_ids                                                        \
+            flatten_ids,                                                       \
+            render_geo,                                                        \
+            cx,                                                                \
+            cy,                                                                \
+            focal_x,                                                           \
+            focal_y                                                            \
         );
 
     // TODO: an optimization can be done by passing the actual number of
